@@ -1,14 +1,18 @@
 import { ConversationalRetrievalQAChain } from 'langchain/chains';
 import { SupabaseHybridSearch } from 'langchain/retrievers/supabase';
 import { ChatOpenAI } from 'langchain/chat_models/openai';
+import { OpenAI } from 'langchain/llms/openai';
 import { CallbackManager } from 'langchain/callbacks';
-
+import { SupabaseVectorStore } from 'langchain/vectorstores/supabase';
 import { OpenAIEmbeddings } from 'langchain/embeddings/openai';
-import { supabase_client } from '$lib/helpers/config';
+import { supabase_client, dbConfig } from '$lib/helpers/config';
+import { loadQAMapReduceChain } from 'langchain/chains';
 
 import { HumanChatMessage, AIChatMessage } from 'langchain/schema';
+import { HumanMessagePromptTemplate } from 'langchain/prompts';
 
 import { config } from 'dotenv';
+
 config();
 
 function historyToTemplates(history = []) {
@@ -35,34 +39,37 @@ export const makeChain = async (question, history = []) => {
 	});
 
 	/* create vectorstore*/
-	// const vectorStore = await SupabaseVectorStore.fromExistingIndex(
-	//   embeddings,
-	//   dbConfig
-	// );
+	const vectorStore = await SupabaseVectorStore.fromExistingIndex(embeddings, dbConfig);
 
-	const retriever = getReteiever(embeddings);
+	// const retriever = getReteiever(embeddings);
 
-	const llm = new ChatOpenAI({
-		temperature: 0.42,
+	const llm = new OpenAI({
+		temperature: 0,
 		streaming: true,
 		modelName: 'gpt-3.5-turbo',
-		callbackManager: llmCallback(writer, encoder),
-
-		verbose: true,
-		cache: true
+		callbackManager: llmCallback(writer, encoder)
 	});
 
-	const chain = ConversationalRetrievalQAChain.fromLLM(llm, retriever, {
-		qaTemplate: getQATemplate(),
-		questionGeneratorTemplate: generateQuestion(),
+	const chain = ConversationalRetrievalQAChain.fromLLM(llm, vectorStore.asRetriever(2), {
+		qaChainOptions: {
+			type: 'refine',
+			prompt: HumanMessagePromptTemplate.fromTemplate(getQATemplate())
+		},
 		returnSourceDocuments: true,
-		callbacks: chainCallBacks(writer, encoder)
+		callbacks: chainCallBacks(writer, encoder),
+		verbose: true,
+		questionGeneratorChainOptions: {
+			llm: new ChatOpenAI({
+				temperature: 0.42,
+				modelName: 'gpt-3.5-turbo'
+			})
+		}
 	});
 
-	chain.questionGeneratorChain.llm = new ChatOpenAI({
-		temperature: 0.42,
-		modelName: 'gpt-3.5-turbo'
-	});
+	// chain.questionGeneratorChain.llm = new ChatOpenAI({
+	// 	temperature: 0.42,
+	// 	modelName: 'gpt-3.5-turbo'
+	// });
 
 	chain.call({
 		question,
@@ -128,13 +135,14 @@ Standalone question:`;
 
 const getQATemplate = () => {
 	const qa_template = `
-  You are an AI version of Osho, you take questions from your followers and answer them.
+  You are the AI version of Osho and this is your discourse going on. 
+  You take questions from your followers and answer them.
+  Talk in Osho Tone. Give stories and examples.
 	 
   You learn from the context provided below and answer the question at the end.
   
-  Answer strictly in Hindi. Always Answer in Details and with stories.
+  Answer strictly in Hindi
   
-  Previous Conversation: {chat_history}
   context: {context}
 
   Generate an answer to the following question. Think steps by steps, take your time.
